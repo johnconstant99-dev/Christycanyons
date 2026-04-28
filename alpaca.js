@@ -1,54 +1,68 @@
-const express = require("express");
-const router = express.Router();
-const { protect } = require("../middleware/auth");
-const alpaca = require("../config/alpaca");
+const axios = require("axios");
 
-// All routes require auth
-router.use(protect);
-
-// ─── GET /api/alpaca/account ──────────────────────────────────────────────────
-router.get("/account", async (req, res) => {
-  try {
-    const account = await alpaca.getAccount();
-    res.json({ success: true, account });
-  } catch (err) {
-    console.error("Alpaca account error:", err.message);
-    res.status(502).json({ success: false, message: "Could not reach Alpaca API." });
-  }
+const alpacaClient = axios.create({
+  baseURL: process.env.ALPACA_BASE_URL || "https://paper-api.alpaca.markets",
+  headers: {
+    "APCA-API-KEY-ID": process.env.ALPACA_API_KEY,
+    "APCA-API-SECRET-KEY": process.env.ALPACA_API_SECRET,
+    "Content-Type": "application/json",
+  },
 });
 
-// ─── GET /api/alpaca/positions ────────────────────────────────────────────────
-router.get("/positions", async (req, res) => {
-  try {
-    const positions = await alpaca.getPositions();
-    res.json({ success: true, positions });
-  } catch (err) {
-    console.error("Alpaca positions error:", err.message);
-    res.status(502).json({ success: false, message: "Could not fetch positions." });
-  }
-});
+// ─── Get account info ─────────────────────────────────────────────────────────
+exports.getAccount = async () => {
+  const { data } = await alpacaClient.get("/v2/account");
+  return {
+    totalValue: parseFloat(data.portfolio_value),
+    cash: parseFloat(data.cash),
+    buyingPower: parseFloat(data.buying_power),
+    equity: parseFloat(data.equity),
+    status: data.status,
+    currency: data.currency,
+  };
+};
 
-// ─── GET /api/alpaca/orders ───────────────────────────────────────────────────
-router.get("/orders", async (req, res) => {
-  try {
-    const orders = await alpaca.getOrders(req.query.limit || 20);
-    res.json({ success: true, orders });
-  } catch (err) {
-    console.error("Alpaca orders error:", err.message);
-    res.status(502).json({ success: false, message: "Could not fetch orders." });
-  }
-});
+// ─── Get open positions ───────────────────────────────────────────────────────
+exports.getPositions = async () => {
+  const { data } = await alpacaClient.get("/v2/positions");
+  return data.map((p) => ({
+    symbol: p.symbol,
+    qty: parseFloat(p.qty),
+    avgEntry: parseFloat(p.avg_entry_price),
+    currentPrice: parseFloat(p.current_price),
+    marketValue: parseFloat(p.market_value),
+    unrealizedPnl: parseFloat(p.unrealized_pl),
+    unrealizedPnlPct: parseFloat(p.unrealized_plpc) * 100,
+    side: p.side,
+  }));
+};
 
-// ─── GET /api/alpaca/history ──────────────────────────────────────────────────
-router.get("/history", async (req, res) => {
-  try {
-    const { period = "1M", timeframe = "1D" } = req.query;
-    const history = await alpaca.getPortfolioHistory(period, timeframe);
-    res.json({ success: true, history });
-  } catch (err) {
-    console.error("Alpaca history error:", err.message);
-    res.status(502).json({ success: false, message: "Could not fetch portfolio history." });
-  }
-});
+// ─── Get recent orders/trades ────────────────────────────────────────────────
+exports.getOrders = async (limit = 20) => {
+  const { data } = await alpacaClient.get(`/v2/orders?status=filled&limit=${limit}&direction=desc`);
+  return data.map((o) => ({
+    id: o.id,
+    symbol: o.symbol,
+    side: o.side,
+    qty: parseFloat(o.qty),
+    filledQty: parseFloat(o.filled_qty),
+    filledAvgPrice: parseFloat(o.filled_avg_price),
+    status: o.status,
+    createdAt: o.created_at,
+    filledAt: o.filled_at,
+  }));
+};
 
-module.exports = router;
+// ─── Get portfolio history ────────────────────────────────────────────────────
+exports.getPortfolioHistory = async (period = "1M", timeframe = "1D") => {
+  const { data } = await alpacaClient.get(
+    `/v2/account/portfolio/history?period=${period}&timeframe=${timeframe}`
+  );
+  return {
+    timestamps: data.timestamp,
+    equity: data.equity,
+    profitLoss: data.profit_loss,
+    profitLossPct: data.profit_loss_pct,
+    baseValue: data.base_value,
+  };
+};
